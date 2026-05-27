@@ -1,0 +1,546 @@
+// =============================================================================
+//  Problem Context Store — database schema
+//  -----------------------------------------------------------------------------
+//  Design principles:
+//    1. Multi-tenant from row one. Every customer-visible row carries a
+//       `workspaceId` and is scoped at the application layer.
+//    2. Problem is the canonical noun. Everything else (Event, Artifact)
+//       attaches to a Problem.
+//    3. Event is the universal log of cross-tool activity. Connectors
+//       produce Events; resolution links Events to Clients and Problems.
+//    4. pgvector for semantic search and problem clustering.
+//    5. Soft references to source systems via (source, sourceId) — never
+//       hard-link to external IDs as primary keys.
+// =============================================================================
+
+generator client {
+  provider        = "prisma-client-js"
+  previewFeatures = ["postgresqlExtensions"]
+}
+
+datasource db {
+  provider   = "postgresql"
+  url        = env("DATABASE_URL")
+  directUrl  = env("DIRECT_URL")
+  extensions = [pgvector(map: "vector", schema: "public")]
+}
+
+// =============================================================================
+//  Tenancy: Workspace / User / Membership
+// =============================================================================
+
+model Workspace {
+  id        String   @id @default(cuid())
+  name      String
+  slug      String   @unique
+  imageUrl  String?
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  memberships Membership[]
+  invites     WorkspaceInvite[]
+  clients     Client[]
+  problems    Problem[]
+  events      Event[]
+  artifacts   Artifact[]
+  connectors  ConnectorInstance[]
+  auditLogs   AuditLog[]
+  manualNotes ManualNote[]
+
+  @@map("workspace")
+}
+
+model User {
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String?
+  image         String?   // Auth.js convention (was imageUrl in M1)
+  emailVerified DateTime? // Set by Auth.js when the user verifies an email/magic link
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+
+  memberships     Membership[]
+  manualNotes     ManualNote[]
+  auditLogs       AuditLog[]
+  createdProblems Problem[] @relation("ProblemCreatedBy")
+  accounts        Account[]
+  sessions        Session[]
+
+  @@map("user")
+}
+
+// -----------------------------------------------------------------------------
+//  Auth.js Prisma adapter tables — DO NOT add app-specific fields here.
+//  Keep these aligned with what @auth/prisma-adapter expects.
+// -----------------------------------------------------------------------------
+
+model Account {
+  id                String  @id @default(cuid())
+  userId            String
+  type              String
+  provider          String
+  providerAccountId String
+  refresh_token     String? @db.Text
+  access_token      String? @db.Text
+  expires_at        Int?
+  token_type        String?
+  scope             String?
+  id_token          String? @db.Text
+  session_state     String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([provider, providerAccountId])
+  @@index([userId])
+  @@map("account")
+}
+
+model Session {
+  id           String   @id @default(cuid())
+  sessionToken String   @unique
+  userId       String
+  expires      DateTime
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@map("session")
+}
+
+model VerificationToken {
+  identifier String
+  token      String   @unique
+  expires    DateTime
+
+  @@unique([identifier, token])
+  @@map("verification_token")
+}
+
+model Membership {
+  id          String         @id @default(cuid())
+  userId      String
+  workspaceId String
+  role        MembershipRole @default(MEMBER)
+  createdAt   DateTime       @default(now())
+
+  user      User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, workspaceId])
+  @@index([workspaceId])
+  @@map("membership")
+}
+
+enum MembershipRole {
+  OWNER
+  ADMIN
+  MEMBER
+  VIEWER
+}
+
+model WorkspaceInvite {
+  id          String         @id @default(cuid())
+  workspaceId String
+  email       String
+  role        MembershipRole @default(MEMBER)
+  token       String         @unique
+  expiresAt   DateTime
+  acceptedAt  DateTime?
+  createdAt   DateTime       @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, email])
+  @@map("workspace_invite")
+}
+
+// =============================================================================
+//  Client (the customer your workspace serves)
+// =============================================================================
+
+model Client {
+  id          String   @id @default(cuid())
+  workspaceId String
+  name        String
+  slug        String
+  domain      String?  // e.g. "acme.com" — used as a resolution signal
+  status      ClientStatus @default(ACTIVE)
+  metadata    Json?    // free-form: tier, ARR, account owner, etc.
+
+  // External identifiers used during resolution — e.g. {"devrev_account_id": "...", "salesforce_id": "..."}
+  externalIds Json     @default("{}")
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  problems  Problem[]
+  events    Event[]
+
+  @@unique([workspaceId, slug])
+  @@index([workspaceId, status])
+  @@index([workspaceId, domain])
+  @@map("client")
+}
+
+enum ClientStatus {
+  ACTIVE
+  CHURNED
+  PROSPECT
+  ARCHIVED
+}
+
+// =============================================================================
+//  Problem — the canonical noun. Everything connects to this.
+// =============================================================================
+
+model Problem {
+  id          String        @id @default(cuid())
+  workspaceId String
+  clientId    String
+  title       String
+  description String?       @db.Text
+  status      ProblemStatus @default(OPEN)
+  severity    Severity      @default(MEDIUM)
+
+  // Generated summaries (regenerated by intelligence layer when Events change)
+  rootCauseSummary  String? @db.Text
+  resolutionSummary String? @db.Text
+  approachSummary   String? @db.Text
+  summaryGeneratedAt DateTime?
+
+  // Timeline anchors
+  firstSeenAt DateTime
+  resolvedAt  DateTime?
+
+  // Embedding of (title + description + summaries) for clustering & similarity
+  // Cast as Unsupported because Prisma doesn't natively type vector(N) yet.
+  embedding Unsupported("vector(768)")?
+
+  // Soft-tagging — kept as a JSON array of strings for v1 velocity. Move to
+  // a join table when we add the tag-management UI.
+  tags Json @default("[]")
+
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+  createdById String?
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client    Client    @relation(fields: [clientId], references: [id], onDelete: Cascade)
+  createdBy User?     @relation("ProblemCreatedBy", fields: [createdById], references: [id])
+
+  events    Event[]
+  artifacts Artifact[]
+
+  // Problem-to-problem relationships (duplicates, related, parent/child)
+  edgesFrom ProblemEdge[] @relation("ProblemEdgeFrom")
+  edgesTo   ProblemEdge[] @relation("ProblemEdgeTo")
+
+  manualNotes ManualNote[]
+
+  @@index([workspaceId, clientId, status])
+  @@index([workspaceId, status, severity])
+  @@index([workspaceId, firstSeenAt])
+  @@map("problem")
+}
+
+enum ProblemStatus {
+  OPEN
+  INVESTIGATING
+  IN_PROGRESS
+  AWAITING_CUSTOMER
+  RESOLVED
+  CLOSED
+  ARCHIVED
+}
+
+enum Severity {
+  LOW
+  MEDIUM
+  HIGH
+  CRITICAL
+}
+
+model ProblemEdge {
+  id        String          @id @default(cuid())
+  fromId    String
+  toId      String
+  kind      ProblemEdgeKind
+  createdAt DateTime        @default(now())
+
+  from Problem @relation("ProblemEdgeFrom", fields: [fromId], references: [id], onDelete: Cascade)
+  to   Problem @relation("ProblemEdgeTo", fields: [toId], references: [id], onDelete: Cascade)
+
+  @@unique([fromId, toId, kind])
+  @@index([toId])
+  @@map("problem_edge")
+}
+
+enum ProblemEdgeKind {
+  RELATED
+  DUPLICATE
+  PARENT
+  CHILD
+  CAUSED_BY
+}
+
+// =============================================================================
+//  Event — normalized cross-source activity log
+// =============================================================================
+
+model Event {
+  id          String     @id @default(cuid())
+  workspaceId String
+
+  // Resolution: nullable until the resolution layer attaches them.
+  clientId  String?
+  problemId String?
+
+  // Source identity
+  source     SourceKind
+  sourceId   String     // ID in the source system
+  sourceUrl  String?    // deeplink back to the source
+
+  // Actor — denormalized for display; not a hard FK to User
+  actorName     String?
+  actorEmail    String?
+  actorSourceId String?
+
+  // Timing & threading
+  timestamp      DateTime
+  parentThreadId String?  // for threaded messages
+
+  // Body
+  kind        EventKind  @default(MESSAGE)
+  body        String     @db.Text
+  bodyHtml    String?    @db.Text
+
+  // Reference to the raw payload stored in object storage (added in M5)
+  rawPayloadRef String?
+
+  // Resolution metadata — populated by M6
+  clientResolutionConfidence  Float?
+  problemResolutionConfidence Float?
+  resolutionReason            String? @db.Text
+  resolutionMethod            ResolutionMethod?
+
+  // Embedding for clustering & semantic search
+  embedding Unsupported("vector(768)")?
+
+  createdAt DateTime @default(now())
+
+  workspace Workspace      @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  client    Client?        @relation(fields: [clientId], references: [id])
+  problem   Problem?       @relation(fields: [problemId], references: [id])
+  mentions  EventMention[]
+
+  @@unique([workspaceId, source, sourceId])
+  @@index([workspaceId, problemId, timestamp])
+  @@index([workspaceId, clientId, timestamp])
+  @@index([workspaceId, source, timestamp])
+  @@map("event")
+}
+
+enum SourceKind {
+  SLACK
+  DEVREV
+  GITHUB
+  GMAIL
+  GOOGLE_DRIVE
+  MEETING_TRANSCRIPT
+  MANUAL_NOTE
+  EMAIL_IN
+  WEB_CLIP
+  PHONE_CALL
+  STUB // testing connector — see @pcs/connectors/stub
+}
+
+enum EventKind {
+  MESSAGE
+  TICKET_CREATED
+  TICKET_UPDATED
+  TICKET_RESOLVED
+  PR_OPENED
+  PR_MERGED
+  PR_CLOSED
+  COMMIT
+  CALL_TRANSCRIPT
+  EMAIL_SENT
+  EMAIL_RECEIVED
+  DOC_UPDATED
+  STATUS_CHANGE
+  NOTE
+}
+
+enum ResolutionMethod {
+  EXPLICIT          // user tagged it
+  RULE              // matched a deterministic rule (channel name, domain, etc.)
+  VECTOR_MATCH      // similarity > threshold against an open problem
+  LLM_JUDGE         // an LLM judged it belonged here
+  MANUAL_CONFIRM    // human confirmed an LLM suggestion
+}
+
+model EventMention {
+  id      String      @id @default(cuid())
+  eventId String
+  kind    MentionKind
+  value   String
+
+  event Event @relation(fields: [eventId], references: [id], onDelete: Cascade)
+
+  @@index([kind, value])
+  @@map("event_mention")
+}
+
+enum MentionKind {
+  USER_EMAIL
+  USER_HANDLE
+  CLIENT_NAME
+  TICKET_ID
+  PR_URL
+  URL
+  HASHTAG
+}
+
+// =============================================================================
+//  Artifact — first-class reference to a source artifact (ticket, PR, doc)
+//  Distinct from Event: Events are activity points; Artifacts are the
+//  enduring objects in source systems.
+// =============================================================================
+
+model Artifact {
+  id          String       @id @default(cuid())
+  workspaceId String
+  problemId   String
+  kind        ArtifactKind
+
+  source   SourceKind
+  sourceId String
+  url      String?
+  title    String?
+  status   String?  // arbitrary source-specific status (e.g. "open", "merged")
+
+  // Structured fields specific to artifact kind — e.g. PR additions/deletions,
+  // ticket priority, doc author. Kept flexible.
+  payload Json?
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  problem   Problem   @relation(fields: [problemId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, source, sourceId])
+  @@index([problemId])
+  @@map("artifact")
+}
+
+enum ArtifactKind {
+  TICKET
+  SLACK_THREAD
+  PR
+  COMMIT
+  DOC
+  EMAIL_THREAD
+  MEETING
+  MANUAL_NOTE
+  RECORDING
+}
+
+// =============================================================================
+//  ManualNote — first-class capture for off-tool conversations
+// =============================================================================
+
+model ManualNote {
+  id          String   @id @default(cuid())
+  workspaceId String
+  problemId   String?  // optional — note can be filed under a problem or stand alone
+  authorId    String
+  title       String?
+  body        String   @db.Text
+
+  // Provenance — where the conversation happened that isn't in any tool
+  channel     ManualChannel @default(OTHER)
+  occurredAt  DateTime
+  participants Json?         // array of {name, email?, role?}
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  problem   Problem?  @relation(fields: [problemId], references: [id], onDelete: SetNull)
+  author    User      @relation(fields: [authorId], references: [id])
+
+  @@index([workspaceId, problemId])
+  @@index([workspaceId, occurredAt])
+  @@map("manual_note")
+}
+
+enum ManualChannel {
+  HALLWAY
+  PHONE_CALL
+  WHATSAPP
+  IN_PERSON_MEETING
+  CUSTOMER_VISIT
+  CONFERENCE
+  TEXT_MESSAGE
+  OTHER
+}
+
+// =============================================================================
+//  ConnectorInstance — per-workspace OAuth installation of a source
+// =============================================================================
+
+model ConnectorInstance {
+  id          String     @id @default(cuid())
+  workspaceId String
+  kind        SourceKind
+  displayName String
+
+  // Encrypted at the application layer with a per-workspace KEK.
+  credentialsEncrypted Bytes?
+  config               Json?  // per-connector config (channels to watch, etc.)
+
+  status     ConnectorStatus @default(PENDING)
+  lastSyncAt DateTime?
+  lastError  String?         @db.Text
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+
+  @@unique([workspaceId, kind, displayName])
+  @@index([workspaceId, status])
+  @@map("connector_instance")
+}
+
+enum ConnectorStatus {
+  PENDING
+  ACTIVE
+  ERROR
+  PAUSED
+  DISCONNECTED
+}
+
+// =============================================================================
+//  AuditLog — every state-changing action
+// =============================================================================
+
+model AuditLog {
+  id          String   @id @default(cuid())
+  workspaceId String
+  actorUserId String?
+  action      String   // e.g. "problem.create", "event.link", "connector.install"
+  targetType  String?  // "problem", "event", "connector"
+  targetId    String?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+
+  workspace Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  actor     User?     @relation(fields: [actorUserId], references: [id])
+
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, action, createdAt])
+  @@map("audit_log")
+}

@@ -1,0 +1,42 @@
+# Dependencies
+node_modules/
+.pnpm-store/
+
+# Build output
+.next/
+dist/
+build/
+out/
+
+# Turbo
+.turbo/
+
+# Env
+.env
+.env.local
+.env.*.local
+
+# Logs
+*.log
+npm-debug.log*
+pnpm-debug.log*
+yarn-debug.log*
+
+# OS / editor
+.DS_Store
+.vscode/*
+!.vscode/extensions.json
+.idea/
+
+# Prisma
+packages/db/prisma/migrations/dev.db*
+
+# Local node_modules created by ad-hoc scripts (e.g. docs build)
+/node_modules/
+/package-lock.json
+
+# TypeScript
+*.tsbuildinfo
+
+# Test
+coverage/
