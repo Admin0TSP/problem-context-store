@@ -46,11 +46,29 @@ You will be given:
 - A list of that client's open Problems with their titles and summaries.
 
 Decide one of:
-1. "existing" — the event is evidence about one of the listed Problems.
+1. "existing" — the event is evidence about ONE of the listed Problems. Only pick this if you'd defend the match to an engineer who knows the system. Same broken component AND same kind of failure mode. If the event is about a different system or a different failure mode, do NOT pick existing — even if the client is the same.
 2. "new" — the event describes a customer problem that doesn't match any of the existing ones, and is substantive enough to track as its own Problem.
 3. "uncertain" — you don't have enough information to decide confidently. Better to flag for human review than to mislabel.
 
-Bias toward "uncertain" unless you have a clear signal. Mislabeling pollutes the customer's institutional memory. "New" should be reserved for actual new customer problems — not for internal chatter, status updates on existing problems, or off-topic side conversation.
+DEFAULT TO "uncertain". You will be judged on PRECISION, not coverage. Polluting the customer's institutional memory with a wrong "existing" pick is much worse than punting to a human. If you find yourself hedging in the reason field with "could be related to" or "possibly tied to" — stop and pick "uncertain".
+
+"new" should be reserved for actual new customer problems — not for internal chatter, status updates on existing problems, or off-topic side conversation.
+
+EXAMPLES — what counts as "existing" vs "new":
+
+Existing problem: "Site speed issues on theseopilot.pro homepage — Homepage takes 8+ seconds on mobile, LCP 6.2s, hero image suspected."
+  ✓ EXISTING: "Customers complaining the homepage is super slow today, LCP hit 7s in Lighthouse."
+                (Same system + same symptom. Confidence 0.85.)
+  ✗ NOT EXISTING: "SSL cert expired this morning, Chrome shows Not Secure on the site."
+                (Different system: SSL cert vs frontend asset size. Pick "new".)
+  ✗ NOT EXISTING: "Massive 5xx error spike in Search Console — 2,800 pages."
+                (Different failure mode: server errors vs slow rendering. Pick "new".)
+
+Existing problem: "Google Search Console verification keeps failing — DNS TXT record set via Cloudflare, GSC reports failed."
+  ✓ EXISTING: "Tried the meta-tag GSC verification method too, still says incomplete."
+                (Same GSC verification flow. Confidence 0.85.)
+  ✗ NOT EXISTING: "Article schema isn't showing rich results in SERPs."
+                (Different GSC area: verification vs rich-snippet rendering. Pick "new".)
 
 Reply with JSON ONLY, no prose, in this exact shape:
 {
@@ -59,18 +77,18 @@ Reply with JSON ONLY, no prose, in this exact shape:
   "title": "<short Problem title if decision=new>",
   "severity": "LOW" | "MEDIUM" | "HIGH" | "CRITICAL",
   "confidence": <number between 0.0 and 1.0>,
-  "reason": "<one sentence explaining your choice>"
+  "reason": "<one sentence explaining your choice — name the specific component/symptom you matched>"
 }
 
 CONFIDENCE GUIDE — pick a real number; do NOT default to 0:
   0.95  the event explicitly names the Problem id, ticket key, or restates the title nearly verbatim.
-  0.85  the event clearly describes the same symptom on the same system as the existing Problem.
-  0.75  strong topical overlap (same component + same kind of issue) but worded differently.
+  0.85  the event clearly describes the SAME component AND the SAME kind of failure as the existing Problem.
+  0.75  strong topical overlap on both component AND failure mode, but worded differently.
   0.65  plausibly the same Problem, but the event is short or vague.
-  0.50  on-topic but could be a related-but-separate Problem.
+  0.50  same client, same general area, but probably a related-but-separate Problem — pick "uncertain" instead.
   0.30  weak signal — pick "uncertain" instead.
 
-NEVER output confidence: 0 unless decision is "uncertain". If you picked "existing" you must justify it with confidence ≥ 0.65.`;
+NEVER output confidence: 0 unless decision is "uncertain". If you picked "existing" you must justify it with confidence ≥ 0.65 AND name the specific shared component/symptom in your reason.`;
 
 export async function judgeWithLlm(input: LlmJudgeInput): Promise<LlmJudgement | null> {
   if (!llmAvailable()) return null;

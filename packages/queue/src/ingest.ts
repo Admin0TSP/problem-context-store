@@ -20,7 +20,9 @@ import { Queue, type JobsOptions } from 'bullmq';
 import type { NormalizedEvent } from '@pcs/connectors';
 import { getRedisConnection } from './connection';
 
-export const INGEST_QUEUE_NAME = 'pcs:ingest';
+// BullMQ v5 forbids ':' in queue names (it uses ':' internally for Redis key
+// namespacing). Hyphen-separated is the convention now.
+export const INGEST_QUEUE_NAME = 'pcs-ingest';
 
 /** What a single ingest job carries. */
 export interface IngestJobData {

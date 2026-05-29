@@ -39,6 +39,22 @@ const ATTACH_CONFIDENCE_FLOOR = 0.65;
 /** When the best vector candidate is this far ahead of #2, we attach without LLM. */
 const VECTOR_LEAD_MARGIN = 0.05;
 
+/**
+ * Minimum vector similarity required to TRUST an LLM "existing" pick.
+ *
+ * Why: small local LLMs (llama3.1:8b, qwen2.5:3b) are over-eager — they will
+ * cheerfully report `existing` with confidence 0.85 when the event has only
+ * tangential overlap with the picked candidate. The vector layer is a much
+ * more reliable signal of "are these actually about the same thing".
+ *
+ * Anything below this floor → we ignore the LLM's "existing" decision and
+ * treat the event as uncertain (lands in inbox with client identified but
+ * no problem auto-attached). Empirically calibrated against M9 testing:
+ *   sim 0.77–0.86 → correct matches  ✓ above floor
+ *   sim 0.60–0.65 → incorrect over-eager matches  ✗ below floor
+ */
+const LLM_EXISTING_VECTOR_FLOOR = 0.7;
+
 export interface ResolutionResult {
   clientId: string | null;
   problemId: string | null;
@@ -258,28 +274,49 @@ export async function resolve(
         );
 
         if (judgement?.decision === 'existing') {
-          chosenProblemId = judgement.problemId;
-          // Small local models (e.g. llama3.1:8b) often return confidence=0 even
-          // when they're confident in the pick. If the LLM's pick is also a top
-          // vector candidate, use the vector similarity as a confidence floor —
-          // both signals agreeing is a stronger signal than either alone.
           const vectorMatch = candidates.find((c) => c.id === judgement.problemId);
-          const vectorFloor = vectorMatch ? vectorMatch.similarity : 0;
-          const LLM_AGREEMENT_FLOOR = 0.7; // both LLM + vector agreed → at least needs-confirm
-          problemConfidence = Math.max(
-            judgement.confidence,
-            vectorFloor,
-            vectorMatch ? LLM_AGREEMENT_FLOOR : 0,
-          );
-          if (problemConfidence !== judgement.confidence) {
+          const vectorSim = vectorMatch ? vectorMatch.similarity : 0;
+
+          if (vectorSim < LLM_EXISTING_VECTOR_FLOOR) {
+            // The LLM thinks it's an existing problem, but the vector layer
+            // disagrees strongly — the picked candidate has weak topical
+            // similarity to the incoming event. Don't trust the LLM here;
+            // small local models hallucinate matches when given a small
+            // candidate list. Treat as uncertain so the event lands in the
+            // inbox (client still identified) for human review.
             console.log(
-              `[resolver] LLM said conf=${judgement.confidence.toFixed(2)} but vector backs ` +
-                `id=${judgement.problemId} at sim=${vectorFloor.toFixed(4)} → ` +
-                `using effective conf=${problemConfidence.toFixed(4)}`,
+              `[resolver] LLM picked existing "${vectorMatch?.title ?? judgement.problemId}" ` +
+                `but vector sim=${vectorSim.toFixed(4)} < floor ${LLM_EXISTING_VECTOR_FLOOR} ` +
+                `→ rejecting LLM, treating as uncertain (event → inbox)`,
             );
+            problemReason =
+              `LLM picked existing (${judgement.reason}) but vector similarity ` +
+              `${vectorSim.toFixed(2)} is below floor ${LLM_EXISTING_VECTOR_FLOOR} — ` +
+              `not auto-attaching`;
+            // chosenProblemId stays null → event goes to inbox.
+          } else {
+            chosenProblemId = judgement.problemId;
+            // Small local models often return confidence=0 even when they're
+            // confident in the pick. If the LLM's pick is also a top vector
+            // candidate above the floor, use the vector similarity as a
+            // confidence floor — both signals agreeing is a stronger signal
+            // than either alone.
+            const LLM_AGREEMENT_FLOOR = 0.7;
+            problemConfidence = Math.max(
+              judgement.confidence,
+              vectorSim,
+              LLM_AGREEMENT_FLOOR,
+            );
+            if (problemConfidence !== judgement.confidence) {
+              console.log(
+                `[resolver] LLM said conf=${judgement.confidence.toFixed(2)} but vector backs ` +
+                  `id=${judgement.problemId} at sim=${vectorSim.toFixed(4)} → ` +
+                  `using effective conf=${problemConfidence.toFixed(4)}`,
+              );
+            }
+            problemMethod = ResolutionMethod.LLM_JUDGE;
+            problemReason = `LLM picked existing: ${judgement.reason}`;
           }
-          problemMethod = ResolutionMethod.LLM_JUDGE;
-          problemReason = `LLM picked existing: ${judgement.reason}`;
         } else if (judgement?.decision === 'new' && judgement.confidence >= ATTACH_CONFIDENCE_FLOOR) {
           const spawned = await spawnProblem({
             workspaceId,

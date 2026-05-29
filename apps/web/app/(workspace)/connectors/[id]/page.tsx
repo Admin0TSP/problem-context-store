@@ -11,6 +11,7 @@ import { relativeTime, absoluteTime } from '@/lib/format';
 import { regenerateWebhookToken, uninstallConnector } from '@/app/actions/ingest';
 import { SimulateEventForm } from './SimulateEventForm';
 import { CopyWebhookUrl } from './CopyWebhookUrl';
+import { SyncGmailButton } from './SyncGmailButton';
 
 export const dynamic = 'force-dynamic';
 
@@ -57,15 +58,23 @@ export default async function ConnectorInstanceDetail({ params }: { params: { id
     botUserId?: string;
     scope?: string;
     installedAt?: string;
+    // Gmail-specific
+    ownerEmail?: string;
+    ownerName?: string | null;
+    historyId?: string | null;
   };
   const slug = instance.kind.toLowerCase();
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   const isSlack = instance.kind === 'SLACK';
-  // Slack sends events to a single app-wide URL (no instanceId). For other
-  // connectors the token+instanceId pattern still applies.
+  const isGmail = instance.kind === 'GMAIL';
+  // Slack sends events to a single app-wide URL (no instanceId). Gmail uses
+  // polling, no webhook URL. For other connectors the token+instanceId
+  // pattern still applies.
   const webhookUrl = isSlack
     ? `${baseUrl}/api/ingest/slack`
-    : `${baseUrl}/api/ingest/${slug}/${instance.id}?token=${config.webhookToken ?? ''}`;
+    : isGmail
+      ? null
+      : `${baseUrl}/api/ingest/${slug}/${instance.id}?token=${config.webhookToken ?? ''}`;
 
   const adapter = getAdapter(slug);
 
@@ -103,8 +112,49 @@ export default async function ConnectorInstanceDetail({ params }: { params: { id
 
       <main className="grid gap-6 px-6 py-6 lg:grid-cols-[1fr,360px]">
         <div className="space-y-6">
-          {/* Webhook URL — non-Slack connectors (Stub today; DevRev/etc later) */}
-          {!isSlack && (
+          {/* Gmail-specific: connected account + Sync button */}
+          {isGmail && (
+            <section className="rounded-lg border border-ink-200 bg-white p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-ink-900">Gmail account</h2>
+              <p className="mt-1 text-xs text-ink-500">
+                Authenticated via Google OAuth. Click <strong>Sync now</strong> to fetch new
+                messages — they flow through the same resolver + worker pipeline as Slack events.
+              </p>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <dt className="text-ink-500">Inbox</dt>
+                  <dd className="font-medium text-ink-900">{config.ownerEmail ?? '—'}</dd>
+                </div>
+                {config.ownerName && (
+                  <div>
+                    <dt className="text-ink-500">Display name</dt>
+                    <dd className="text-ink-900">{config.ownerName}</dd>
+                  </div>
+                )}
+                {config.historyId && (
+                  <div>
+                    <dt className="text-ink-500">History cursor</dt>
+                    <dd className="font-mono text-ink-900">{config.historyId}</dd>
+                  </div>
+                )}
+              </dl>
+              <div className="mt-4">
+                <SyncGmailButton instanceId={instance.id} />
+              </div>
+              <p className="mt-3 text-xs text-ink-500">
+                MVP polls Gmail with a time-window query (last sync + 10-min overlap). True
+                incremental sync via Gmail's History API + auto-polling lands in M8b.5. To
+                re-authorize this Gmail account, click{' '}
+                <Link href="/api/auth/google/start" className="text-accent hover:underline">
+                  Add to Gmail
+                </Link>{' '}
+                again.
+              </p>
+            </section>
+          )}
+
+          {/* Webhook URL — non-Slack, non-Gmail connectors (Stub today; DevRev/etc later) */}
+          {!isSlack && !isGmail && (
             <section className="rounded-lg border border-ink-200 bg-white p-5 shadow-sm">
               <h2 className="text-sm font-semibold text-ink-900">Webhook URL</h2>
               <p className="mt-1 text-xs text-ink-500">

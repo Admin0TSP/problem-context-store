@@ -120,6 +120,24 @@ export default async function NewConnectorPage({
                   </Link>
                 </div>
               </div>
+            ) : chosen.descriptor.kind === 'GMAIL' ? (
+              <div className="mt-5 space-y-3">
+                <div className="rounded-md bg-ink-50 p-3 text-xs text-ink-700">
+                  <p className="font-medium">You'll be redirected to Google to grant Gmail read access.</p>
+                  <p className="mt-1">
+                    Pick the Gmail account you want to monitor (typically a customer-support inbox like{' '}
+                    <code className="rounded bg-ink-100 px-1">support@yourdomain.com</code>). After approval
+                    you'll return here with the inbox active. Use the <strong>Sync now</strong> button on
+                    the instance page to pull new messages.
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <Link href="/connectors"><Button type="button" variant="ghost">Cancel</Button></Link>
+                  <Link href="/api/auth/google/start">
+                    <Button type="button">Add to Gmail</Button>
+                  </Link>
+                </div>
+              </div>
             ) : (
               <div className="mt-5 rounded-md bg-amber-50 p-3 text-xs text-amber-900">
                 OAuth not wired yet for this connector. (Lands in a later M8 release.)

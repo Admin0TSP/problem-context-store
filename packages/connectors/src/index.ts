@@ -9,6 +9,7 @@
 import type { ConnectorAdapter } from './adapter';
 import { stubAdapter } from './stub';
 import { slackAdapter } from './slack';
+import { gmailAdapter } from './gmail';
 
 export * from './adapter';
 export { slackAdapter } from './slack';
@@ -29,6 +30,23 @@ export type {
   VerifySlackResult,
 } from './slack';
 
+export { gmailAdapter } from './gmail';
+export {
+  parseGmailMessage,
+  stripGmailHtml,
+  parseFromHeader,
+  gmailOAuthRedirectUri,
+  generateOpaqueState as gmailGenerateState,
+  parseState as gmailParseState,
+  GMAIL_OAUTH_SCOPES,
+} from './gmail';
+export type {
+  GmailMessage,
+  GmailHeader,
+  GmailMessagePart,
+  ParseGmailContext,
+} from './gmail';
+
 /**
  * Registry keyed by the string used in the `/api/ingest/[connector]` URL.
  * Note that the `SourceKind` enum has values like SLACK, DEVREV; we use the
@@ -37,9 +55,9 @@ export type {
 const REGISTRY: Record<string, ConnectorAdapter> = {
   stub: stubAdapter,
   slack: slackAdapter,
-  // devrev: devrevAdapter,      // M8b
-  // github: githubAdapter,      // M8b
-  // gmail: gmailAdapter,        // M8b
+  gmail: gmailAdapter,
+  // devrev: devrevAdapter,      // M8c
+  // github: githubAdapter,      // M8c
 };
 
 export function getAdapter(slug: string): ConnectorAdapter | null {
