@@ -179,13 +179,31 @@ If switching to the eventual **Named Tunnel** with `pcs.theseopilot.pro`:
 
 ### Immediately on resume
 
-1. **Finish DNS migration to Cloudflare** (in progress at handoff time). After Cloudflare emails "domain is Active":
-   - `dig +short NS theseopilot.pro` should show `carter.ns.cloudflare.com` + `ximena.ns.cloudflare.com`
-   - Test mail delivery to `admin@theseopilot.pro` from another account
-   - Click **Start Authentication** on the DKIM page in Google Admin
-   - Optionally set up Cloudflare Named Tunnel for permanent `pcs.theseopilot.pro`
+1. **DNS migration to Cloudflare is COMPLETE.** Cloudflare nameservers active for `theseopilot.pro`:
+   - `carter.ns.cloudflare.com`
+   - `ximena.ns.cloudflare.com`
+   - DKIM "Start Authentication" was clicked in Google Admin once DNS propagated.
+   - Mail delivery to `admin@theseopilot.pro` confirmed working.
 
-2. **Verify Gmail connector end-to-end.** Send a test email matching one of the seeded Problems (see `packages/db/sql/seed-tsp-workspace.sql`), click Sync now, verify `[resolver]` block in terminal matches expectations.
+2. **Set up Cloudflare Named Tunnel for permanent dev URL** (recommended first task on new laptop):
+   ```bash
+   brew install cloudflared
+   # Cloudflare dashboard → Zero Trust → Networks → Tunnels → Create tunnel
+   #   Name: pcs-dev
+   #   Connector type: Cloudflared → copy install command/token
+   cloudflared service install <TOKEN>
+   # In the same Cloudflare wizard, add Public Hostname:
+   #   Subdomain: pcs    Domain: theseopilot.pro
+   #   Service:   HTTP → localhost:3000
+   ```
+   Then update `.env` ONE LAST TIME:
+   ```env
+   NEXT_PUBLIC_APP_URL="https://pcs.theseopilot.pro"
+   AUTH_URL="https://pcs.theseopilot.pro"
+   ```
+   Update OAuth redirect URIs in both the Slack app dashboard and Google Cloud Console to use the new permanent URL.
+
+3. **Verify Gmail connector end-to-end** (if not done before laptop switch). Send a test email matching one of the seeded Problems (see `packages/db/sql/seed-tsp-workspace.sql`), click Sync now, verify `[resolver]` block in terminal matches expectations.
 
 ### Next modules
 
