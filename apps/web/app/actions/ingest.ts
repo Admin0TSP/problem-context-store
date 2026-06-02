@@ -13,10 +13,15 @@ import {
   MembershipRole,
   SourceKind,
 } from '@pcs/db';
-import { getAdapter } from '@pcs/connectors';
+import {
+  getAdapter,
+  generateDevRevWebhookSecret,
+  devrevOrgSlugFromId,
+} from '@pcs/connectors';
 import { getSession } from '@/lib/auth';
 import { requireMinRole } from '@/lib/rbac';
 import { ingestEvents, generateWebhookToken } from '@/lib/ingestion/ingest';
+import { encryptToString } from '@/lib/crypto';
 
 // ---------------------------------------------------------------------------
 // installConnector — for adapters with authFlow=none (currently just Stub).
@@ -86,6 +91,138 @@ export async function installConnector(formData: FormData) {
 
   revalidatePath('/connectors');
   redirect(`/connectors/${instance.id}`);
+}
+
+// ---------------------------------------------------------------------------
+// installDevRevConnector — apikey-flow install (M8c).
+//
+// DevRev doesn't use OAuth (would require a marketplace app). Instead the
+// customer generates a Personal Access Token in their DevRev settings and
+// pastes it here along with their Org ID. We encrypt the PAT, generate a
+// webhook secret, and the user then pastes the resulting webhook URL into
+// DevRev's webhook subscription UI.
+// ---------------------------------------------------------------------------
+
+const DevRevInstallSchema = z.object({
+  displayName: z.string().min(2).max(80),
+  pat: z.string().min(20, 'DevRev PAT looks too short').max(2000),
+  orgId: z.string().min(2).max(120),
+});
+
+export async function installDevRevConnector(formData: FormData) {
+  const session = await getSession();
+  requireMinRole(session, MembershipRole.ADMIN);
+
+  const parsed = DevRevInstallSchema.parse({
+    displayName: formData.get('displayName'),
+    pat:         formData.get('pat'),
+    orgId:       formData.get('orgId'),
+  });
+
+  // Collision check (same readable-error pattern as installConnector).
+  const existing = await prisma.connectorInstance.findFirst({
+    where: {
+      workspaceId: session.workspace.id,
+      kind: SourceKind.DEVREV,
+      displayName: parsed.displayName,
+    },
+    select: { id: true },
+  });
+  if (existing) {
+    throw new Error(
+      `You already have a DevRev connector named "${parsed.displayName}". Pick a different name to install another.`,
+    );
+  }
+
+  const webhookSecret = generateDevRevWebhookSecret();
+  const orgSlug = devrevOrgSlugFromId(parsed.orgId);
+
+  let patEnc: string;
+  try {
+    patEnc = encryptToString(parsed.pat);
+  } catch (err) {
+    throw new Error(
+      `Could not encrypt the PAT — is PCS_ENCRYPTION_KEY set? Original: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    );
+  }
+
+  const instance = await prisma.connectorInstance.create({
+    data: {
+      workspaceId: session.workspace.id,
+      kind: SourceKind.DEVREV,
+      displayName: parsed.displayName,
+      status: ConnectorStatus.PENDING,
+      config: {
+        orgId: parsed.orgId,
+        orgSlug,
+        patEnc,
+        webhookSecret,
+        installedAt: new Date().toISOString(),
+      },
+    },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      workspaceId: session.workspace.id,
+      actorUserId: session.user.id,
+      action: 'connector.install',
+      targetType: 'connector_instance',
+      targetId: instance.id,
+      metadata: { kind: 'DEVREV', orgId: parsed.orgId, orgSlug },
+    },
+  });
+
+  revalidatePath('/connectors');
+  redirect(`/connectors/${instance.id}`);
+}
+
+// ---------------------------------------------------------------------------
+// GitHub install (M11.5) goes through /api/auth/github/start +
+// /api/auth/github/callback. The callback persists the ConnectorInstance
+// directly using the App's installation_id, so there's no server action
+// equivalent here. The "Install on GitHub" button on /connectors/new links
+// straight to /api/auth/github/start.
+// ---------------------------------------------------------------------------
+
+// ---------------------------------------------------------------------------
+// setGitHubIncludeBots — toggle bot-account inclusion post-install.
+//
+// Lives here (not in /api/auth/github/callback) because users sometimes
+// want to flip this without re-running the install flow.
+// ---------------------------------------------------------------------------
+
+export async function setGitHubIncludeBots(formData: FormData) {
+  const session = await getSession();
+  requireMinRole(session, MembershipRole.ADMIN);
+
+  const instanceId = String(formData.get('instanceId') ?? '');
+  const includeBots = formData.get('includeBots') === 'on';
+
+  const instance = await prisma.connectorInstance.findFirst({
+    where: { id: instanceId, workspaceId: session.workspace.id, kind: SourceKind.GITHUB },
+  });
+  if (!instance) throw new Error('GitHub connector not found');
+
+  await prisma.connectorInstance.update({
+    where: { id: instance.id },
+    data: { config: { ...((instance.config as object) ?? {}), includeBots } },
+  });
+
+  await prisma.auditLog.create({
+    data: {
+      workspaceId: session.workspace.id,
+      actorUserId: session.user.id,
+      action: 'connector.update',
+      targetType: 'connector_instance',
+      targetId: instance.id,
+      metadata: { kind: 'GITHUB', includeBots },
+    },
+  });
+
+  revalidatePath(`/connectors/${instance.id}`);
 }
 
 // ---------------------------------------------------------------------------

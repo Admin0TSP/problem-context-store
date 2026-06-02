@@ -4,7 +4,10 @@ import { listAdapters } from '@pcs/connectors';
 import { prisma } from '@pcs/db';
 import { getSession } from '@/lib/auth';
 import { Topbar } from '@/components/Topbar';
-import { installConnector } from '@/app/actions/ingest';
+import {
+  installConnector,
+  installDevRevConnector,
+} from '@/app/actions/ingest';
 import { Label, Input, FieldHint } from '@/components/ui/FormField';
 import { Button } from '@/components/ui/Button';
 import { SourceIcon } from '@/components/SourceIcon';
@@ -138,6 +141,84 @@ export default async function NewConnectorPage({
                   </Link>
                 </div>
               </div>
+            ) : chosen.descriptor.kind === 'GITHUB' ? (
+              <div className="mt-5 space-y-3">
+                <div className="rounded-md bg-ink-50 p-3 text-xs text-ink-700">
+                  <p className="font-medium">You'll be redirected to GitHub to install the PCS App.</p>
+                  <p className="mt-1">
+                    Pick a personal account or an org, then choose <strong>All repositories</strong> or
+                    a hand-picked list. The display name will be set to the GitHub account login
+                    automatically. Re-installing the same install updates the existing instance instead
+                    of creating a duplicate.
+                  </p>
+                  <p className="mt-2">
+                    Read-only access to{' '}
+                    <code className="rounded bg-ink-100 px-1">issues</code>,{' '}
+                    <code className="rounded bg-ink-100 px-1">pull_requests</code>, and{' '}
+                    <code className="rounded bg-ink-100 px-1">metadata</code>. PCS never writes to GitHub.
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <Link href="/connectors"><Button type="button" variant="ghost">Cancel</Button></Link>
+                  <Link href="/api/auth/github/start">
+                    <Button type="button">Install on GitHub</Button>
+                  </Link>
+                </div>
+              </div>
+            ) : chosen.descriptor.kind === 'DEVREV' ? (
+              <form action={installDevRevConnector} className="mt-5 space-y-3">
+                <div>
+                  <Label htmlFor="displayName">Display name</Label>
+                  <Input
+                    id="displayName"
+                    name="displayName"
+                    required
+                    placeholder="e.g. Shipsy DevRev (prod)"
+                    defaultValue={defaultName}
+                  />
+                  <FieldHint>Internal label — must be unique per workspace.</FieldHint>
+                </div>
+                <div>
+                  <Label htmlFor="orgId">DevRev Org ID</Label>
+                  <Input
+                    id="orgId"
+                    name="orgId"
+                    required
+                    placeholder="DEV-yourorg"
+                  />
+                  <FieldHint>
+                    Find under DevRev → Settings → Organization. Looks like{' '}
+                    <code className="rounded bg-ink-100 px-1">DEV-acmecorp</code>.
+                  </FieldHint>
+                </div>
+                <div>
+                  <Label htmlFor="pat">Personal Access Token (PAT)</Label>
+                  <Input
+                    id="pat"
+                    name="pat"
+                    type="password"
+                    required
+                    placeholder="eyJhbGciOi..."
+                    autoComplete="off"
+                  />
+                  <FieldHint>
+                    Generate at DevRev → Settings → Account → Personal Access Tokens. Encrypted at rest
+                    via PCS_ENCRYPTION_KEY. We only use it for future API reads — not stored in plain text.
+                  </FieldHint>
+                </div>
+                <div className="rounded-md bg-ink-50 p-3 text-xs text-ink-700">
+                  <p>
+                    After install you'll get a webhook URL to paste into DevRev's webhook subscription UI.
+                    Subscribe to <code className="rounded bg-ink-100 px-1">work_created</code>,{' '}
+                    <code className="rounded bg-ink-100 px-1">work_updated</code>, and{' '}
+                    <code className="rounded bg-ink-100 px-1">timeline_entry_created</code>.
+                  </p>
+                </div>
+                <div className="flex items-center justify-end gap-2 pt-1">
+                  <Link href="/connectors"><Button type="button" variant="ghost">Cancel</Button></Link>
+                  <Button type="submit">Install</Button>
+                </div>
+              </form>
             ) : (
               <div className="mt-5 rounded-md bg-amber-50 p-3 text-xs text-amber-900">
                 OAuth not wired yet for this connector. (Lands in a later M8 release.)

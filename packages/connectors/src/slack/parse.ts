@@ -17,6 +17,7 @@
  */
 
 import type { NormalizedEvent } from '../adapter';
+import { ticketIdMentionsFromStrings } from '../util/ticket-ids';
 
 /** What the Slack Events API wraps every event in. */
 export interface SlackEventEnvelope {
@@ -107,6 +108,13 @@ export function parseSlackEnvelope(
       (ev.thread_ts && ev.thread_ts !== ts ? `?thread_ts=${ev.thread_ts}&cid=${channel}` : '')
     : undefined;
 
+  // M11.7: extract engineering-ticket IDs from the message body so a customer
+  // Slack message ("ISS-280035 still broken for AcmeCo") auto-clusters onto
+  // the same Problem the matching GitHub PR is already on. The resolver's
+  // TICKET_ID rule (rules.ts step 4) handles the cross-source lookup; we
+  // just have to emit the mentions here.
+  const ticketMentions = ticketIdMentionsFromStrings(text);
+
   const out: NormalizedEvent = {
     source: 'SLACK',
     // (source, sourceId) is the dedup key. Slack guarantees (channel, ts) is unique.
@@ -122,6 +130,7 @@ export function parseSlackEnvelope(
     body: text,
     // Slack uses `ts` of the parent message as the thread identifier.
     parentThreadId: ev.thread_ts && ev.thread_ts !== ts ? ev.thread_ts : undefined,
+    mentions: ticketMentions.length ? ticketMentions : undefined,
   };
 
   return [out];

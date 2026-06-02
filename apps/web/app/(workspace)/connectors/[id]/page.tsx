@@ -62,19 +62,42 @@ export default async function ConnectorInstanceDetail({ params }: { params: { id
     ownerEmail?: string;
     ownerName?: string | null;
     historyId?: string | null;
+    // DevRev-specific
+    orgId?: string;
+    orgSlug?: string;
+    webhookSecret?: string;
+    patEnc?: string;
+    // GitHub-specific (M11.5 — App install)
+    installationId?: number;
+    accountLogin?: string;
+    accountType?: string;
+    accountHtmlUrl?: string;
+    accountAvatarUrl?: string;
+    repositorySelection?: 'all' | 'selected' | string;
+    repositories?: Array<{ id: number; fullName: string; htmlUrl: string; private: boolean }>;
+    permissions?: Record<string, string>;
+    events?: string[];
+    includeBots?: boolean;
   };
   const slug = instance.kind.toLowerCase();
   const baseUrl = process.env.NEXT_PUBLIC_APP_URL || 'http://localhost:3000';
   const isSlack = instance.kind === 'SLACK';
   const isGmail = instance.kind === 'GMAIL';
-  // Slack sends events to a single app-wide URL (no instanceId). Gmail uses
-  // polling, no webhook URL. For other connectors the token+instanceId
-  // pattern still applies.
+  const isDevRev = instance.kind === 'DEVREV';
+  const isGitHub = instance.kind === 'GITHUB';
+  // Slack and GitHub both send to a single app-wide URL (no instanceId).
+  // Gmail uses polling. DevRev uses the generic webhook receiver with a
+  // 32-char URL-safe secret in the URL. Everything else uses the basic
+  // Stub-style token pattern.
   const webhookUrl = isSlack
     ? `${baseUrl}/api/ingest/slack`
     : isGmail
       ? null
-      : `${baseUrl}/api/ingest/${slug}/${instance.id}?token=${config.webhookToken ?? ''}`;
+      : isDevRev
+        ? `${baseUrl}/api/ingest/devrev/${instance.id}?token=${config.webhookSecret ?? ''}`
+        : isGitHub
+          ? `${baseUrl}/api/ingest/github`
+          : `${baseUrl}/api/ingest/${slug}/${instance.id}?token=${config.webhookToken ?? ''}`;
 
   const adapter = getAdapter(slug);
 
@@ -153,8 +176,202 @@ export default async function ConnectorInstanceDetail({ params }: { params: { id
             </section>
           )}
 
-          {/* Webhook URL — non-Slack, non-Gmail connectors (Stub today; DevRev/etc later) */}
-          {!isSlack && !isGmail && (
+          {/* DevRev-specific: account + webhook URL */}
+          {isDevRev && (
+            <section className="rounded-lg border border-ink-200 bg-white p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-ink-900">DevRev workspace</h2>
+              <p className="mt-1 text-xs text-ink-500">
+                Authenticated via Personal Access Token. Events arrive at the webhook URL below —
+                paste it into DevRev → Settings → Webhooks.
+              </p>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <dt className="text-ink-500">Org ID</dt>
+                  <dd className="font-mono text-ink-900">{config.orgId ?? '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Org slug</dt>
+                  <dd className="font-mono text-ink-900">{config.orgSlug ?? '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">PAT</dt>
+                  <dd className="font-mono text-ink-900">
+                    {config.patEnc ? '•••••••• (encrypted, never displayed)' : '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Installed</dt>
+                  <dd className="text-ink-900">
+                    {config.installedAt
+                      ? relativeTime(new Date(config.installedAt))
+                      : relativeTime(instance.createdAt)}
+                  </dd>
+                </div>
+              </dl>
+              <div className="mt-4">
+                <p className="text-xs font-semibold text-ink-700">Webhook URL</p>
+                <p className="mt-1 text-xs text-ink-500">
+                  Subscribe to <code className="rounded bg-ink-100 px-1">work_created</code>,{' '}
+                  <code className="rounded bg-ink-100 px-1">work_updated</code>, and{' '}
+                  <code className="rounded bg-ink-100 px-1">timeline_entry_created</code>. Keep the
+                  token in the URL secret — anyone with it can post events as this connector.
+                </p>
+                <div className="mt-2">
+                  <CopyWebhookUrl url={webhookUrl!} />
+                </div>
+                <p className="mt-3 text-xs text-ink-500">
+                  To rotate the secret, uninstall and re-install the connector (the PAT can be
+                  re-pasted from your password manager). A standalone rotate button lands when we
+                  generalize ConnectorInstance config in M10.
+                </p>
+              </div>
+            </section>
+          )}
+
+          {/* GitHub-specific: App installation details */}
+          {isGitHub && (
+            <section className="rounded-lg border border-ink-200 bg-white p-5 shadow-sm">
+              <h2 className="text-sm font-semibold text-ink-900">GitHub App install</h2>
+              <p className="mt-1 text-xs text-ink-500">
+                Installed via the PCS GitHub App. Every webhook hits a single app-wide endpoint
+                and is routed to this connector by{' '}
+                <code className="rounded bg-ink-100 px-1">installation.id</code>. No per-install
+                webhook configuration to maintain.
+              </p>
+              <dl className="mt-3 grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <dt className="text-ink-500">Account</dt>
+                  <dd className="font-medium text-ink-900">
+                    {config.accountHtmlUrl ? (
+                      <a
+                        href={config.accountHtmlUrl}
+                        target="_blank"
+                        rel="noreferrer"
+                        className="text-accent hover:underline"
+                      >
+                        {config.accountLogin ?? '—'}
+                      </a>
+                    ) : (
+                      config.accountLogin ?? '—'
+                    )}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Account type</dt>
+                  <dd className="text-ink-900">{config.accountType ?? '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Installation ID</dt>
+                  <dd className="font-mono text-ink-900">{config.installationId ?? '—'}</dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Repository scope</dt>
+                  <dd className="text-ink-900">
+                    {config.repositorySelection === 'all'
+                      ? 'All repositories'
+                      : config.repositorySelection === 'selected'
+                        ? `${config.repositories?.length ?? 0} selected`
+                        : config.repositorySelection ?? '—'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Include bot accounts</dt>
+                  <dd className="text-ink-900">
+                    {config.includeBots ? 'Yes (Dependabot, Renovate, etc.)' : 'No — bots are filtered out'}
+                  </dd>
+                </div>
+                <div>
+                  <dt className="text-ink-500">Installed</dt>
+                  <dd className="text-ink-900">
+                    {config.installedAt
+                      ? relativeTime(new Date(config.installedAt))
+                      : relativeTime(instance.createdAt)}
+                  </dd>
+                </div>
+              </dl>
+
+              {config.repositorySelection === 'selected' && (config.repositories?.length ?? 0) > 0 && (
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-ink-700">
+                    Selected repositories ({config.repositories!.length})
+                  </p>
+                  <ul className="mt-2 divide-y divide-ink-200 rounded-md border border-ink-200">
+                    {config.repositories!.slice(0, 20).map((r) => (
+                      <li key={r.id} className="flex items-center justify-between px-3 py-2 text-xs">
+                        <a
+                          href={r.htmlUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="font-mono text-ink-900 hover:text-accent hover:underline"
+                        >
+                          {r.fullName}
+                        </a>
+                        {r.private && (
+                          <Badge tone="muted" >private</Badge>
+                        )}
+                      </li>
+                    ))}
+                    {config.repositories!.length > 20 && (
+                      <li className="px-3 py-2 text-xs text-ink-500">
+                        …and {config.repositories!.length - 20} more.
+                      </li>
+                    )}
+                  </ul>
+                </div>
+              )}
+
+              {config.permissions && Object.keys(config.permissions).length > 0 && (
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-ink-700">Permissions granted</p>
+                  <ul className="mt-2 flex flex-wrap gap-1.5">
+                    {Object.entries(config.permissions).map(([k, v]) => (
+                      <li
+                        key={k}
+                        className="rounded-full border border-ink-200 bg-ink-50 px-2 py-0.5 text-[11px] text-ink-700"
+                      >
+                        {k}: <span className="font-mono">{v}</span>
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+
+              <div className="mt-4 rounded-md bg-ink-50 p-3 text-xs text-ink-700">
+                <p className="font-medium">Webhook endpoint (informational)</p>
+                <p className="mt-1 text-ink-500">
+                  All installs deliver to the App-level URL configured in the GitHub developer portal.
+                  You normally never need this — listed here for ops + debugging.
+                </p>
+                <div className="mt-2">
+                  <CopyWebhookUrl url={webhookUrl!} />
+                </div>
+              </div>
+
+              <p className="mt-4 text-xs text-ink-500">
+                To change repo selection or re-grant permissions, manage the install at{' '}
+                <a
+                  href={
+                    config.accountType === 'Organization'
+                      ? `${config.accountHtmlUrl ?? ''}/settings/installations`
+                      : 'https://github.com/settings/installations'
+                  }
+                  target="_blank"
+                  rel="noreferrer"
+                  className="text-accent hover:underline"
+                >
+                  GitHub <ExternalLink className="inline-block" size={10} />
+                </a>
+                . Or click{' '}
+                <Link href="/api/auth/github/start" className="text-accent hover:underline">
+                  Install on GitHub
+                </Link>{' '}
+                to re-run the install flow.
+              </p>
+            </section>
+          )}
+
+          {/* Webhook URL — non-Slack, non-Gmail, non-DevRev, non-GitHub connectors (Stub today) */}
+          {!isSlack && !isGmail && !isDevRev && !isGitHub && (
             <section className="rounded-lg border border-ink-200 bg-white p-5 shadow-sm">
               <h2 className="text-sm font-semibold text-ink-900">Webhook URL</h2>
               <p className="mt-1 text-xs text-ink-500">

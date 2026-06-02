@@ -8,10 +8,13 @@
  *   1. Connector resolution hints (explicit clientId/problemId from adapter)
  *   2. #PRB-<id> reference in body
  *   3. Thread continuity (sibling event already attached)
- *   4. Actor email domain → Client.domain
+ *   4. TICKET_ID mention match (M11.6) — engineering ticket IDs extracted
+ *      from GitHub branch names / PR titles cluster onto whatever Problem
+ *      the first event carrying that same ID was attached to.
+ *   5. Actor email domain → Client.domain
  */
 
-import { prisma, ResolutionMethod } from '@pcs/db';
+import { prisma, ResolutionMethod, MentionKind } from '@pcs/db';
 import type { NormalizedEvent } from '@pcs/connectors';
 
 export interface RuleHit {
@@ -100,7 +103,46 @@ export async function applyRules(
     }
   }
 
-  // ---- 4. Actor email domain → Client.domain ----
+  // ---- 4. TICKET_ID mention match (M11.6) ----
+  // GitHub adapter populates ev.mentions with TICKET_IDs extracted from the
+  // PR's branch ref + title + body. If any of them have been seen on a
+  // previously-resolved event in this workspace, that event's Problem is
+  // the answer — deterministic by construction (ISS-280035 only ever refers
+  // to one engineering ticket).
+  //
+  // We deliberately query mentions in the order the parser produced them
+  // (branch ref first, then title/body, then comments) so that the most
+  // authoritative reference wins. The first hit short-circuits.
+  const ticketMentions = (ev.mentions ?? []).filter(
+    (m) => m.kind === MentionKind.TICKET_ID && m.value.length > 0,
+  );
+  for (const m of ticketMentions) {
+    // Most recent event carrying this ID is most likely the "current"
+    // Problem if the ID has ever been reused (Shipsy's convention says it
+    // shouldn't be, but we tie-break safely anyway).
+    const prior = await prisma.event.findFirst({
+      where: {
+        workspaceId,
+        problemId: { not: null },
+        mentions: {
+          some: { kind: MentionKind.TICKET_ID, value: m.value },
+        },
+      },
+      orderBy: { createdAt: 'desc' },
+      select: { clientId: true, problemId: true },
+    });
+    if (prior?.problemId) {
+      return {
+        clientId: prior.clientId,
+        problemId: prior.problemId,
+        confidence: 0.95,
+        reason: `Ticket ID ${m.value} previously linked to this Problem`,
+        method: ResolutionMethod.RULE,
+      };
+    }
+  }
+
+  // ---- 5. Actor email domain → Client.domain ----
   if (ev.actor.email) {
     const domain = ev.actor.email.split('@')[1]?.toLowerCase();
     if (domain) {

@@ -10,8 +10,19 @@ import type { ConnectorAdapter } from './adapter';
 import { stubAdapter } from './stub';
 import { slackAdapter } from './slack';
 import { gmailAdapter } from './gmail';
+import { devrevAdapter } from './devrev';
+import { githubAdapter } from './github';
 
 export * from './adapter';
+
+// Cross-adapter helpers (M11.7): ticket-ID regex + extractors used by every
+// parser so a customer message referencing ISS-280035 in any source clusters
+// onto the same Problem.
+export {
+  TICKET_ID_PATTERN,
+  extractTicketIdsFromString,
+  ticketIdMentionsFromStrings,
+} from './util/ticket-ids';
 export { slackAdapter } from './slack';
 export {
   parseSlackEnvelope,
@@ -47,6 +58,46 @@ export type {
   ParseGmailContext,
 } from './gmail';
 
+export { devrevAdapter } from './devrev';
+export {
+  parseDevRevEvent,
+  generateDevRevWebhookSecret,
+  devrevOrgSlugFromId,
+  DEVREV_RECOMMENDED_EVENTS,
+} from './devrev';
+export type {
+  DevRevWebhookPayload,
+  DevRevWork,
+  DevRevTimelineEntry,
+  DevRevPerson,
+  ParseDevRevContext,
+} from './devrev';
+
+export { githubAdapter } from './github';
+export {
+  parseGitHubEvent,
+  getInstallationIdFromPayload,
+  // extractTicketIdsFromString lives at the package root via the
+  // util/ticket-ids re-export above; don't re-export it again here.
+  extractTicketIdMentions,
+  verifyGitHubSignature,
+  signAppJwt,
+  getInstallationToken,
+  getInstallationDetails,
+  appInstallUrl as githubAppInstallUrl,
+  generateOpaqueState as githubGenerateState,
+  parseState as githubParseState,
+  GITHUB_APP_EVENTS,
+  GITHUB_APP_PERMISSIONS,
+} from './github';
+export type {
+  GitHubWebhookPayload,
+  ParseGitHubContext,
+  VerifyGitHubOpts,
+  VerifyGitHubResult,
+  InstallationDetails,
+} from './github';
+
 /**
  * Registry keyed by the string used in the `/api/ingest/[connector]` URL.
  * Note that the `SourceKind` enum has values like SLACK, DEVREV; we use the
@@ -56,8 +107,8 @@ const REGISTRY: Record<string, ConnectorAdapter> = {
   stub: stubAdapter,
   slack: slackAdapter,
   gmail: gmailAdapter,
-  // devrev: devrevAdapter,      // M8c
-  // github: githubAdapter,      // M8c
+  devrev: devrevAdapter,
+  github: githubAdapter,
 };
 
 export function getAdapter(slug: string): ConnectorAdapter | null {

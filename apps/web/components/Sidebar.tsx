@@ -25,7 +25,8 @@ export async function Sidebar({
       where: {
         workspaceId: workspace.id,
         problemId: null,
-        mentions: { none: { kind: 'HASHTAG', value: 'pcs:dismissed' } },
+        // M9.6: don't count noise-filtered events in the Inbox badge.
+        mentions: { none: { kind: 'HASHTAG', value: { in: ['pcs:dismissed', 'pcs:noise'] } } },
       },
     }),
     prisma.event.count({
