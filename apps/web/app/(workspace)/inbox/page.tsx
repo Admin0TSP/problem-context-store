@@ -20,7 +20,8 @@ export default async function InboxPage() {
       where: {
         workspaceId: session.workspace.id,
         problemId: null,
-        mentions: { none: { kind: 'HASHTAG', value: 'pcs:dismissed' } },
+        // M9.6: also exclude noise-filtered events from the inbox default view.
+        mentions: { none: { kind: 'HASHTAG', value: { in: ['pcs:dismissed', 'pcs:noise'] } } },
       },
       orderBy: { createdAt: 'desc' },
       take: 200,

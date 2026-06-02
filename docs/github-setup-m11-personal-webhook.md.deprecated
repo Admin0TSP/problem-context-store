@@ -1,0 +1,178 @@
+# GitHub Connector Setup (M11)
+
+Connect a GitHub repository or organisation to PCS so pull requests, issues
+and review comments flow through the resolver alongside Slack messages and
+Gmail emails.
+
+## Is GitHub free for this?
+
+**Yes, completely.** GitHub webhooks are free for every account tier —
+personal, organization, free, paid, all of them. No PAT required, no app
+registration, no marketplace listing. Just a webhook with a secret.
+
+This is the path of least resistance compared to DevRev's free-tier limits.
+
+## 0. Prerequisites
+
+- A GitHub account with admin access to whatever you want to monitor:
+  - A **repo** if you want events from one project
+  - An **organization** if you want events from every repo in it
+  - A **GitHub App** install if you want to be production-clean (skip for MVP)
+- Your PCS dev server reachable at a public HTTPS URL (you've got
+  `pcs.theseopilot.pro` via the Cloudflare named tunnel).
+- No environment variables to add. Everything lives in `ConnectorInstance.config`.
+
+## 1. Install the GitHub connector in PCS
+
+1. Open `https://pcs.theseopilot.pro/connectors/new`.
+2. Pick **GitHub**.
+3. Fill in:
+   - **Display name**: `theseopilot/main-repo` or `shipsy-org` — whatever helps
+     you identify it later.
+   - **Include bot accounts**: leave unchecked unless you specifically want
+     Dependabot / Renovate / GitHub Actions noise in your resolver.
+4. Click **Install**.
+
+You land on `/connectors/<new-id>` showing two things to copy:
+
+- **Payload URL** — `https://pcs.theseopilot.pro/api/ingest/github/cmp...`
+- **Secret** — a 32-character URL-safe string
+
+Both are copyable from the page. Keep them both private; anyone with the
+URL+secret pair can forge events against this connector.
+
+## 2. Create the webhook in GitHub
+
+Decide where you want to add the webhook:
+
+| Scope | Where in GitHub | Use when |
+|---|---|---|
+| **Single repo** | Repo → Settings → Webhooks → Add webhook | Just one project matters |
+| **Whole org** | Org → Settings → Webhooks → Add webhook | You want events from every repo in the org |
+| **Personal account** | Profile → Settings → Developer settings → Webhooks (rare) | Personal projects |
+
+Then in the webhook form:
+
+1. **Payload URL** — paste the URL from PCS.
+2. **Content type** — `application/json` (default is `application/x-www-form-urlencoded`; **change it** or signature verification will fail).
+3. **Secret** — paste the 32-character secret from PCS.
+4. **SSL verification** — keep **Enable SSL verification** on.
+5. **Which events would you like to trigger this webhook?** — pick **Let me
+   select individual events**, then check:
+   - ✅ **Issues** (covers opened/closed/reopened)
+   - ✅ **Issue comments**
+   - ✅ **Pull requests**
+   - ✅ **Pull request reviews**
+   - ✅ **Pull request review comments**
+
+   You can also pick *Send me everything* — the parser silently ignores
+   events it doesn't care about (pushes, stars, forks, etc.).
+
+6. ✅ **Active** — yes.
+7. Click **Add webhook**.
+
+GitHub immediately fires a `ping` event to confirm the URL is reachable. PCS
+verifies the HMAC signature and 200s.
+
+## 3. Confirm it worked
+
+In the GitHub webhook page, scroll to **Recent Deliveries**. You'll see the
+ping. Click into it — under the **Response** tab, you should see:
+
+```
+Status: 200
+Body:   { "received": 0, "enqueued": 0, "jobId": null }
+```
+
+(`received: 0` because pings don't carry an event, but the 200 status means
+the signature verified correctly.)
+
+If you see **401** or red exclamation marks:
+
+| Symptom | Likely cause | Fix |
+|---|---|---|
+| 401, response says "Signature verification failed" | Secret mismatch | Re-copy from PCS → re-paste into GitHub. Watch for trailing whitespace. |
+| 401, response says "Missing X-Hub-Signature-256 header" | Webhook missing the secret entirely | Edit the webhook in GitHub, paste the secret, save. |
+| 400, response says "Body is not JSON" | Content type is `application/x-www-form-urlencoded` | Change content type to `application/json` and re-deliver. |
+| 404 | Wrong instance ID in URL | Re-copy the Payload URL from `/connectors/<id>`. |
+
+GitHub has a **Redeliver** button on past deliveries — useful to test fixes
+without creating fake activity.
+
+## 4. Smoke test it
+
+In the connected repo:
+
+1. **Create an issue** titled something like *"Customer reports site speed regression"* with a description. Within a couple of seconds you should see in `pnpm dev`:
+
+```
+POST /api/ingest/github/cmp... 200 in ~50ms
+[worker] ⇢ job=N (github:cmp...) processing 1 event
+[resolver] ───── GITHUB/TICKET_CREATED "[Issue opened] Customer reports site speed..."
+[resolver] ✓ DECISION: ...
+```
+
+2. **Add a comment** to that issue. Comments fire `issue_comment` →
+   `MESSAGE`. They cluster onto the same Problem as the issue via the
+   thread-continuity rule (`parentThreadId = repo#number`).
+
+3. **Open a PR** mentioning the issue. PRs fire `pull_request` with action
+   `opened` → `PR_OPENED`. Comments on the PR fire `issue_comment` (for
+   conversation tab) or `pull_request_review_comment` (for inline diff
+   comments) → both `MESSAGE`.
+
+4. **Merge the PR**. Fires `pull_request` with action `closed` and
+   `merged: true` → `PR_MERGED`.
+
+## 5. Adjusting noise
+
+By default we skip bot accounts (Dependabot, Renovate, GitHub Actions). If
+you want their events too — say you genuinely want Dependabot updates as
+Problem evidence — uninstall and reinstall the connector with **Include
+bot accounts** checked.
+
+The two-stage noise filter (M9.6 + M9.6.1) still applies on top. Short
+"LGTM" review comments will get caught by the regex filter; off-topic
+chatter by the semantic filter.
+
+## 6. Re-installing & rotation
+
+To rotate the webhook secret today, uninstall and reinstall the connector
+in PCS — a new secret is generated. Then edit the webhook in GitHub, paste
+the new secret, save.
+
+Past events stay in the database (uninstall removes the `ConnectorInstance`
+row but leaves `Event` rows intact).
+
+## What's deliberately not in MVP
+
+- **GitHub App install** (vs personal webhook). A proper GitHub App would
+  let multiple PCS customers install the same app to their orgs via the
+  Marketplace flow. Real production move; saved for when there's a
+  customer who needs it.
+- **PAT-based enrichment**. With a PAT we could fetch the file diff for a
+  review comment, expand short PR descriptions, fetch reviewer profiles.
+  Webhook payloads are enough for the resolver to do its job today; we'll
+  add enrichment in M11.1 if a real demo scenario needs it.
+- **Push event ingest**. Per-commit events would 10x the volume on active
+  repos with marginal Problem-resolution value. We rely on PR opens/merges
+  to capture "what shipped" instead.
+- **Linking PRs as Artifacts** rather than Events. The data model already
+  has an `Artifact` table for PR/ticket "hero" objects. Linking PRs as
+  Artifacts (vs Events) is a richer UX for the Problem detail page;
+  saved for later UI polish.
+
+## Architecture notes
+
+- The webhook receiver is the existing generic
+  `/api/ingest/[connector]/[instanceId]/route.ts`. No new route file —
+  GitHub uses the standard pattern.
+- HMAC verification lives in `packages/connectors/src/github/signature.ts`
+  using Node's native `crypto` module. Constant-time comparison via
+  `timingSafeEqual`.
+- The parser at `packages/connectors/src/github/parse.ts` is pure (no I/O,
+  no database). The receiver hands it parsed JSON; it returns
+  `NormalizedEvent[]`.
+- All five GitHub event types collapse into ~3 PCS EventKinds:
+  `PR_OPENED/PR_MERGED/PR_CLOSED`, `TICKET_CREATED/TICKET_RESOLVED`,
+  `MESSAGE`, plus `STATUS_CHANGE` for PR reviews.

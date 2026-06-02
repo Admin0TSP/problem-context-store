@@ -12,6 +12,17 @@ export {
   type IngestJobData,
   type IngestJobResult,
 } from './ingest';
+export {
+  SYNC_QUEUE_NAME,
+  SYNC_JOB_NAMES,
+  getSyncQueue,
+  registerGmailPollRepeating,
+  triggerGmailPollNow,
+  clearAllRepeating,
+  type SyncJobName,
+  type SyncJobData,
+  type SyncJobResult,
+} from './sync';
 
 // Re-export the BullMQ classes we expect consumers (the worker) to use.
 // Keeps version pinned to ours so worker + queue can't drift.

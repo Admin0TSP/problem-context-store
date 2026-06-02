@@ -77,6 +77,9 @@ export async function guessClientFromText(
   if (!vec) return [];
   const vecLit = pgvectorLiteral(vec);
 
+  // M9.6: exclude events tagged as noise so their embeddings don't pollute
+  // the client-guess. We left-join event_mention and filter where the row
+  // doesn't have a pcs:noise hashtag.
   const sql = `
     SELECT c.id, c.name,
            MAX(1 - (e.embedding <=> '${vecLit}'::vector)) AS similarity
@@ -85,6 +88,12 @@ export async function guessClientFromText(
     WHERE c."workspaceId" = $1
       AND e.embedding IS NOT NULL
       AND e."createdAt" > NOW() - INTERVAL '90 days'
+      AND NOT EXISTS (
+        SELECT 1 FROM event_mention em
+        WHERE em."eventId" = e.id
+          AND em.kind = 'HASHTAG'::"MentionKind"
+          AND em.value = 'pcs:noise'
+      )
     GROUP BY c.id, c.name
     ORDER BY similarity DESC
     LIMIT ${Math.max(1, Math.min(20, Math.floor(limit)))}
