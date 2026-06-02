@@ -30,6 +30,7 @@
  */
 
 import type { NormalizedEvent } from '../adapter';
+import { ticketIdMentionsFromStrings } from '../util/ticket-ids';
 
 export interface GmailHeader {
   name: string;
@@ -107,6 +108,12 @@ export function parseGmailMessage(
       ? new Date(dateHeader)
       : new Date();
 
+  // M11.7: extract engineering-ticket IDs from subject + body so an inbound
+  // support email referencing "ISS-280035" auto-clusters onto the same
+  // Problem the matching GitHub PR is already on. Subject is listed first so
+  // it wins for IDs that appear in both (the cleaner authoritative signal).
+  const ticketMentions = ticketIdMentionsFromStrings(subject, text || stripHtml(html));
+
   // Gmail's thread_id maps cleanly to NormalizedEvent.parentThreadId. Multiple
   // emails in the same Gmail thread will cluster onto the same Problem via
   // the existing thread-continuity rule.
@@ -124,6 +131,7 @@ export function parseGmailMessage(
       body: composedBody.slice(0, 16000), // cap to keep embeddings sane
       bodyHtml: html || undefined,
       parentThreadId: msg.threadId,
+      mentions: ticketMentions.length ? ticketMentions : undefined,
     },
   ];
 }

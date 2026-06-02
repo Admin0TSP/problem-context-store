@@ -28,6 +28,7 @@
  */
 
 import type { NormalizedEvent } from '../adapter';
+import { extractTicketIdsFromString } from '../util/ticket-ids';
 
 // ---------------------------------------------------------------------------
 // Common payload shapes (partial — just what we read)
@@ -141,31 +142,15 @@ export function getInstallationIdFromPayload(
 }
 
 // ---------------------------------------------------------------------------
-// Ticket ID extraction (M11.6)
+// Ticket ID extraction (M11.6, generalized to all sources in M11.7)
 // ---------------------------------------------------------------------------
 
-/**
- * Matches engineering-ticket references the way Shipsy + most B2B orgs name
- * their work — DevRev `ISS-280035`, Jira-ish `TKT-1234`. Case-insensitive so
- * a stray `iss-12345` in a comment still gets caught. Word-bounded so we
- * don't false-positive on `LOSS-1234` or `prefixISS-12`.
- */
-const TICKET_ID_PATTERN = /\b(ISS|TKT)-(\d+)\b/gi;
-
-/**
- * Pulled out so the rules layer (or anyone else) can run the same regex
- * against arbitrary strings — Slack messages and Gmail bodies are the
- * obvious follow-up callers, but for now only the GitHub parser uses it.
- */
-export function extractTicketIdsFromString(s: string | null | undefined): string[] {
-  if (!s) return [];
-  const out: string[] = [];
-  for (const m of s.matchAll(TICKET_ID_PATTERN)) {
-    // Normalize: uppercase prefix, no extra whitespace. `ISS-280035`.
-    out.push(`${m[1]!.toUpperCase()}-${m[2]!}`);
-  }
-  return out;
-}
+// The regex + per-string extractor moved to ../util/ticket-ids.ts in M11.7 so
+// Slack and Gmail parsers can share them without an awkward cross-adapter
+// import. Re-exported here so anything that previously imported from
+// `@pcs/connectors/github` (the package's github sub-export and the package
+// root) keeps working unchanged.
+export { TICKET_ID_PATTERN, extractTicketIdsFromString } from '../util/ticket-ids';
 
 /**
  * Strip the `username:` prefix that GitHub adds to `head.ref` on cross-fork

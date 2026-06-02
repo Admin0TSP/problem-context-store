@@ -14,6 +14,15 @@ import { devrevAdapter } from './devrev';
 import { githubAdapter } from './github';
 
 export * from './adapter';
+
+// Cross-adapter helpers (M11.7): ticket-ID regex + extractors used by every
+// parser so a customer message referencing ISS-280035 in any source clusters
+// onto the same Problem.
+export {
+  TICKET_ID_PATTERN,
+  extractTicketIdsFromString,
+  ticketIdMentionsFromStrings,
+} from './util/ticket-ids';
 export { slackAdapter } from './slack';
 export {
   parseSlackEnvelope,
@@ -68,7 +77,8 @@ export { githubAdapter } from './github';
 export {
   parseGitHubEvent,
   getInstallationIdFromPayload,
-  extractTicketIdsFromString,
+  // extractTicketIdsFromString lives at the package root via the
+  // util/ticket-ids re-export above; don't re-export it again here.
   extractTicketIdMentions,
   verifyGitHubSignature,
   signAppJwt,
